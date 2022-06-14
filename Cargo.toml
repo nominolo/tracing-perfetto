@@ -1,11 +1,18 @@
 [package]
-name = "tracer"
+name = "tracing-perfetto"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+repository = "https://github.com/nominolo/tracing-perfetto"
+authors = ["Thomas Schilling <nominolo@googlemail.com>"]
+license = "MIT OR Apache-2.0"
+
 
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = "0.3"
 crossbeam-channel = "0.5"
+
+[dev-dependencies]
+tracing-chrome = "0.6"

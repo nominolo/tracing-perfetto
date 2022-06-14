@@ -1,1 +1,5 @@
 /target
+/data
+*.perfetto-trace
+traceconv
+trace-*.json
