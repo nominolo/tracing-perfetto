@@ -10,14 +10,14 @@ use std::{
         Arc,
     },
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use intern::Interned;
 use packet::{
-    DebugAnnotation, TracePacketDefaults, TrackDescriptor, TrackEventDefaults,
-    SEQ_INCREMENTAL_STATE_CLEARED,
+    CounterDescriptor, CounterValue, DebugAnnotation, TracePacketDefaults, TrackDescriptor,
+    TrackEventDefaults, SEQ_INCREMENTAL_STATE_CLEARED,
 };
 use tracing::{field::Visit, span, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
@@ -88,6 +88,8 @@ type Timestamp = u64;
 #[derive(Debug)]
 pub enum Message {
     NewThread(ThreadId, String),
+    NewCounter(u64, String),
+    SetCounter(Timestamp, i64, u64),
     Enter(
         Timestamp,
         &'static str,
@@ -109,6 +111,10 @@ impl<S> PerfettoLayer<S> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker = std::thread::spawn(move || writer_thread(rx, builder.output_file));
 
+        let tx2 = tx.clone();
+        let (tx1, rx1) = crossbeam_channel::bounded(1);
+        let cpu_stats = std::thread::spawn(move || dummy_counter_thread(tx2, rx1));
+
         let start = Instant::now();
 
         (
@@ -122,6 +128,8 @@ impl<S> PerfettoLayer<S> {
             FlushGuard {
                 handle: Some(worker),
                 sender: tx,
+                stats_handle: Some(cpu_stats),
+                stats_sender: tx1,
             },
         )
     }
@@ -260,6 +268,9 @@ struct DebugInfoExt {
 pub struct FlushGuard {
     handle: Option<JoinHandle<()>>, // An option, so we can `take`
     sender: Sender<Message>,
+
+    stats_handle: Option<JoinHandle<()>>,
+    stats_sender: Sender<bool>,
 }
 
 impl Drop for FlushGuard {
@@ -267,9 +278,15 @@ impl Drop for FlushGuard {
         // Tell writer thread to stop. Sending will fail if thread is already
         // stopped. We can ignore that.
         let _ignore_err = self.sender.send(crate::Message::Drop);
+        let _ignore_err = self.stats_sender.send(true);
         if let Some(handle) = self.handle.take() {
             if handle.join().is_err() {
                 eprintln!("tracing_perfetto: writer thread panicked");
+            }
+        }
+        if let Some(handle) = self.stats_handle.take() {
+            if handle.join().is_err() {
+                eprintln!("tracing_perfetto: stats thread panicked");
             }
         }
     }
@@ -326,6 +343,30 @@ impl Visit for DebugAnnotationVisitor {
     }
 }
 
+fn dummy_counter_thread(tx: Sender<Message>, rx: Receiver<bool>) {
+    let start = Instant::now();
+    let cpu_start = cpu_time::ProcessTime::now();
+    let counter_id = 1;
+    let _ = tx.send(Message::NewCounter(counter_id, "cpu time".to_string()));
+    let mut n = cpu_start.elapsed().as_nanos() as u64;
+    let ts = start.elapsed().as_nanos() as u64;
+    let _ignore = tx.send(Message::SetCounter(ts, n as i64, counter_id));
+    loop {
+        match rx.recv_timeout(Duration::from_millis(5)) {
+            Ok(_) => {
+                return;
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                let mut n = cpu_start.elapsed().as_nanos() as u64;
+                let ts = start.elapsed().as_nanos() as u64;
+                // TODO: If sending failed, we can also just return, right?
+                let _ignore = tx.send(Message::SetCounter(ts, n as i64, counter_id));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 //fn fields_to_debug_attrs()
 
 // pub fn init_thread()
@@ -367,13 +408,13 @@ fn writer_thread(rx: Receiver<Message>, path: Option<PathBuf>) {
                     sequence_flags: SEQ_INCREMENTAL_STATE_CLEARED,
                     trusted_uid,
                     trusted_packet_sequence_id: 1 + thread_id as u32,
-                    interned_data: None,
                     trace_packet_defaults: Some(TracePacketDefaults {
                         timestamp_clock_id: 6, // boottime?
                         track_event_defaults: Some(TrackEventDefaults {
                             track_uuid: 8765 * (thread_id as u64 + 1),
                         }),
                     }),
+                    ..Default::default()
                 };
 
                 // thread track descriptor. defines track uuid and track name
@@ -383,16 +424,68 @@ fn writer_thread(rx: Receiver<Message>, path: Option<PathBuf>) {
                     data: PacketData::TrackDescriptor(TrackDescriptor {
                         uuid: 8765 * (thread_id as u64 + 1),
                         name: thread_name,
+                        counter: None,
                     }),
                     sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
                     trusted_uid,
                     trusted_packet_sequence_id: 1 + thread_id as u32,
-                    interned_data: None,
-                    trace_packet_defaults: None,
+                    ..Default::default()
                 };
 
-                em.nested(1, |out| msg0.emit(out));
-                em.nested(1, |out| msg1.emit(out));
+                em.nested(1, |out| Ok(msg0.emit(out)));
+                em.nested(1, |out| Ok(msg1.emit(out)));
+                writer.write(em.as_bytes()).unwrap();
+            }
+
+            Message::NewCounter(counter_id, counter_name) => {
+                let msg0 = TracePacket {
+                    timestamp: 1,
+                    data: PacketData::None,
+                    sequence_flags: SEQ_INCREMENTAL_STATE_CLEARED,
+                    trusted_uid,
+                    trusted_packet_sequence_id: 1000 + counter_id as u32,
+                    trace_packet_defaults: Some(TracePacketDefaults {
+                        timestamp_clock_id: 6, // boottime?
+                        track_event_defaults: Some(TrackEventDefaults {
+                            track_uuid: 8766 * (counter_id as u64 + 1),
+                        }),
+                    }),
+                    ..Default::default()
+                };
+
+                let msg1 = TracePacket {
+                    timestamp: 1,
+                    data: PacketData::TrackDescriptor(TrackDescriptor {
+                        uuid: 8766 * (counter_id as u64 + 1),
+                        name: counter_name,
+                        counter: Some(CounterDescriptor {
+                            unit: packet::CounterUnit::TimeNs,
+                        }),
+                    }),
+                    sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
+                    trusted_uid,
+                    trusted_packet_sequence_id: 1000 + counter_id as u32,
+                    ..Default::default()
+                };
+                em.nested(1, |out| Ok(msg0.emit(out)));
+                em.nested(1, |out| Ok(msg1.emit(out)));
+                writer.write(em.as_bytes()).unwrap();
+            }
+
+            Message::SetCounter(timestamp, value, counter_id) => {
+                let msg = TracePacket {
+                    timestamp,
+                    data: PacketData::TrackEvent(TrackEvent {
+                        event_type: packet::EventType::Counter,
+                        counter_value: Some(CounterValue::Int64(value)),
+                        ..Default::default()
+                    }),
+                    sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
+                    trusted_uid,
+                    trusted_packet_sequence_id: 1000 + counter_id as u32,
+                    ..Default::default()
+                };
+                em.nested(1, |out| Ok(msg.emit(out)));
                 writer.write(em.as_bytes()).unwrap();
             }
 
@@ -414,29 +507,30 @@ fn writer_thread(rx: Receiver<Message>, path: Option<PathBuf>) {
                     sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
                     data: PacketData::TrackEvent(TrackEvent {
                         event_type: packet::EventType::SliceBegin,
-                        name: packet::IString::Interned(name_iid),
+                        name: Some(packet::IString::Interned(name_iid)),
                         debug_annotations: if let Some(info) = debug_info {
                             info.deref().to_vec()
                         } else {
                             Vec::new()
                         }, // debug_annotations: vec![DebugAnnotation {
-                           //     name: packet::IString::Plain("hello".to_string()),
-                           //     value: packet::DebugValue::Uint(42),
-                           // }]
-                           // debug_annotations: vec![DebugAnnotation {
-                           //     name: packet::IString::Plain("blah".to_string()),
-                           //     value: packet::DebugValue::Array(vec![
-                           //         packet::DebugValue::Int(32)
-                           //     ])
-                           // }]
+                        //     name: packet::IString::Plain("hello".to_string()),
+                        //     value: packet::DebugValue::Uint(42),
+                        // }]
+                        // debug_annotations: vec![DebugAnnotation {
+                        //     name: packet::IString::Plain("blah".to_string()),
+                        //     value: packet::DebugValue::Array(vec![
+                        //         packet::DebugValue::Int(32)
+                        //     ])
+                        // }]
+                        ..Default::default()
                     }),
                     trusted_uid,
                     trusted_packet_sequence_id: 1 + thread_id,
                     interned_data,
-                    trace_packet_defaults: None,
+                    ..Default::default()
                 };
 
-                em.nested(1, |out| msg.emit(out));
+                em.nested(1, |out| Ok(msg.emit(out)));
                 writer.write(em.as_bytes()).unwrap();
             }
             Message::Exit(timestamp, name, thread_id) => {
@@ -457,16 +551,16 @@ fn writer_thread(rx: Receiver<Message>, path: Option<PathBuf>) {
                     sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
                     data: PacketData::TrackEvent(TrackEvent {
                         event_type: packet::EventType::SliceEnd,
-                        name: packet::IString::Interned(name_iid), // packet::IString::Plain(name),
-                        debug_annotations: Vec::new(),
+                        name: Some(packet::IString::Interned(name_iid)), // packet::IString::Plain(name),
+                        ..Default::default()
                     }),
                     trusted_uid,
                     trusted_packet_sequence_id: 1 + thread_id as u32,
                     interned_data,
-                    trace_packet_defaults: None,
+                    ..Default::default()
                 };
 
-                em.nested(1, |out| msg.emit(out));
+                em.nested(1, |out| Ok(msg.emit(out)));
                 writer.write(em.as_bytes()).unwrap();
             }
 
@@ -488,20 +582,21 @@ fn writer_thread(rx: Receiver<Message>, path: Option<PathBuf>) {
                     sequence_flags: SEQ_NEEDS_INCREMENTAL_STATE,
                     data: PacketData::TrackEvent(TrackEvent {
                         event_type: packet::EventType::Instant,
-                        name: packet::IString::Interned(name_iid),
+                        name: Some(packet::IString::Interned(name_iid)),
                         debug_annotations: if let Some(info) = debug_info {
                             info.deref().to_vec()
                         } else {
                             Vec::new()
                         },
+                        ..Default::default()
                     }),
                     trusted_uid,
                     trusted_packet_sequence_id: 1 + thread_id,
                     interned_data,
-                    trace_packet_defaults: None,
+                    ..Default::default()
                 };
 
-                em.nested(1, |out| msg.emit(out));
+                em.nested(1, |out| Ok(msg.emit(out)));
                 writer.write(em.as_bytes()).unwrap();
             }
 

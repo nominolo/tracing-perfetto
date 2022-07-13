@@ -10,6 +10,25 @@ pub struct TracePacket {
     pub trace_packet_defaults: Option<TracePacketDefaults>, // = 59
 }
 
+impl Default for TracePacket {
+    fn default() -> Self {
+        Self {
+            timestamp: 0,
+            data: PacketData::None,
+            sequence_flags: 0,
+            trusted_uid: 0,
+            trusted_packet_sequence_id: 0,
+            interned_data: None,
+            trace_packet_defaults: None,
+        }
+    }
+}
+
+pub enum CounterValue {
+    Int64(i64),
+    Double(f64),
+}
+
 pub const SEQ_INCREMENTAL_STATE_CLEARED: u32 = 1;
 pub const SEQ_NEEDS_INCREMENTAL_STATE: u32 = 2;
 
@@ -27,14 +46,27 @@ pub enum IString {
 
 pub struct TrackEvent {
     pub event_type: EventType,
-    pub name: IString,
+    pub name: Option<IString>,
     pub debug_annotations: Vec<DebugAnnotation>,
+    pub counter_value: Option<CounterValue>,
+}
+
+impl Default for TrackEvent {
+    fn default() -> Self {
+        Self {
+            event_type: EventType::Instant,
+            name: None,
+            debug_annotations: Vec::new(),
+            counter_value: None,
+        }
+    }
 }
 
 pub enum EventType {
     Instant,
     SliceBegin,
     SliceEnd,
+    Counter,
 }
 
 impl EventType {
@@ -43,6 +75,7 @@ impl EventType {
             EventType::Instant => 3,
             EventType::SliceBegin => 1,
             EventType::SliceEnd => 2,
+            EventType::Counter => 4,
         }
     }
 }
@@ -56,7 +89,7 @@ impl Emit for TracePacketDefaults {
     fn emit(&self, out: &mut ProtoEmitter) {
         out.varint_field(58, self.timestamp_clock_id as u64);
         if let Some(defaults) = self.track_event_defaults.as_ref() {
-            out.nested(11, |out| defaults.emit(out));
+            out.nested(11, |out| Ok(defaults.emit(out)));
         }
     }
 }
@@ -74,12 +107,44 @@ impl Emit for TrackEventDefaults {
 pub struct TrackDescriptor {
     pub uuid: u64,
     pub name: String,
+    pub counter: Option<CounterDescriptor>,
 }
 
 impl Emit for TrackDescriptor {
     fn emit(&self, out: &mut ProtoEmitter) {
         out.varint_field(1, self.uuid);
         out.string_field(2, &self.name);
+        if let Some(counter) = self.counter.as_ref() {
+            out.nested_small(8, |out| Ok(counter.emit(out)));
+        }
+    }
+}
+
+pub struct CounterDescriptor {
+    pub unit: CounterUnit,
+}
+
+impl Emit for CounterDescriptor {
+    fn emit(&self, out: &mut ProtoEmitter) {
+        out.varint_field(3, self.unit.id())
+    }
+}
+
+pub enum CounterUnit {
+    Unspecified,
+    TimeNs,
+    Count,
+    SizeBytes,
+}
+
+impl CounterUnit {
+    pub fn id(&self) -> u64 {
+        match self {
+            CounterUnit::Unspecified => 0,
+            CounterUnit::TimeNs => 1,
+            CounterUnit::Count => 2,
+            CounterUnit::SizeBytes => 3,
+        }
     }
 }
 
@@ -104,6 +169,7 @@ impl Emit for InternedData {
         for event_name in &self.event_names {
             out.nested_small(2, |out| {
                 event_name.emit(out);
+                Ok(())
             });
         }
     }
@@ -126,11 +192,18 @@ impl Emit for TrackEvent {
     fn emit(&self, out: &mut ProtoEmitter) {
         out.varint_field(9, self.event_type.id());
         match &self.name {
-            IString::Plain(s) => out.string_field(23, s),
-            IString::Interned(iid) => out.varint_field(10, *iid),
+            Some(IString::Plain(s)) => out.string_field(23, s),
+            Some(IString::Interned(iid)) => out.varint_field(10, *iid),
+            None => (),
         }
         for debug_ann in &self.debug_annotations {
-            out.nested(4, |out| debug_ann.emit(out));
+            out.nested(4, |out| Ok(debug_ann.emit(out)));
+        }
+        if let Some(counter) = &self.counter_value {
+            match counter {
+                CounterValue::Int64(val) => out.varint_field(30, *val as u64),
+                CounterValue::Double(val) => out.double_field(44, *val),
+            }
         }
     }
 }
@@ -145,24 +218,24 @@ impl Emit for TracePacket {
         match &self.data {
             PacketData::None => (),
             PacketData::TrackEvent(ev) => {
-                out.nested(11, |out| ev.emit(out));
+                out.nested(11, |out| Ok(ev.emit(out)));
                 // ev.emit(&mut buf);
                 // out.bytes_field(11, buf.as_bytes());
             }
             PacketData::TrackDescriptor(ev) => {
-                out.nested(60, |out| ev.emit(out));
+                out.nested(60, |out| Ok(ev.emit(out)));
                 // ev.emit(&mut buf);
                 // out.bytes_field(60, buf.as_bytes());
             }
         }
         if let Some(interned_data) = self.interned_data.as_ref() {
-            out.nested(12, |out| interned_data.emit(out));
+            out.nested(12, |out| Ok(interned_data.emit(out)));
             // buf.clear();
             // interned_data.emit(&mut buf);
             // out.bytes_field(12, buf.as_bytes());
         }
         if let Some(defaults) = self.trace_packet_defaults.as_ref() {
-            out.nested(59, |out| defaults.emit(out))
+            out.nested(59, |out| Ok(defaults.emit(out)));
             // buf.clear();
             // defaults.emit(&mut buf);
             // out.bytes_field(59, buf.as_bytes());
@@ -231,12 +304,12 @@ fn emit_value(value: &DebugValue, out: &mut ProtoEmitter) {
         DebugValue::String(s) => out.string_field(6, s),
         DebugValue::Dict(anns) => {
             for ann in anns {
-                out.nested_small(11, |out| ann.emit(out));
+                out.nested_small(11, |out| Ok(ann.emit(out)));
             }
         }
         DebugValue::Array(vals) => {
             for val in vals {
-                out.nested_small(12, |out| emit_value(val, out));
+                out.nested_small(12, |out| Ok(emit_value(val, out)));
             }
         }
     }

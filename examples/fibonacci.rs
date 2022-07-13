@@ -3,6 +3,7 @@ use tracing::instrument;
 #[instrument]
 fn fibonacci(n: usize) -> usize {
     if n < 2 {
+        std::thread::sleep_ms(30);
         n
     } else {
         fibonacci(n - 1) + fibonacci(n - 2)
@@ -32,8 +33,12 @@ fn main() {
         })
         .unwrap();
 
-    tracing::debug!("Log message: {}", "hello");
-    fibonacci(5);
+    let start = cpu_time::ProcessTime::now();
 
-    j.join().unwrap()
+    tracing::debug!("cpu time: {}", 0);
+    fibonacci(5);
+    tracing::debug!("cpu time: {:?}", start.elapsed());
+
+    j.join().unwrap();
+    tracing::debug!("cpu time: {:?}", start.elapsed());
 }

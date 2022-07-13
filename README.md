@@ -20,7 +20,7 @@ fn main() {
         .build();
     tracing_subscriber::registry().with(perfetto_layer).init();
 
-    // start making using spans and #[instrument], etc.
+    // Start using spans and #[instrument], etc.
 
     // ...
 }
