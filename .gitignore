@@ -3,3 +3,4 @@
 *.perfetto-trace
 traceconv
 trace-*.json
+.vscode/

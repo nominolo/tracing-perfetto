@@ -30,6 +30,7 @@ use crate::{
     },
 };
 
+pub mod buffer;
 mod emit;
 mod intern;
 mod packet;
