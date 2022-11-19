@@ -171,7 +171,7 @@ impl LocalQueue {
         let tid = queue.0;
         let _ = self.pending_bufs.remove(&tid).unwrap();
         let _ = self.finished_bufs.send(queue);
-        println!("finish {tid}");
+        //println!("finish {tid}");
 
         let new_queue = ArrayQueue::new(self.buf_size);
         let r = Arc::new((tid, new_queue));
@@ -181,7 +181,7 @@ impl LocalQueue {
 
     fn fresh_buffer(&self) -> Arc<(u64, ArrayQueue<Message>)> {
         let (tid, _is_new) = self.get_thread_id();
-        println!("fresh {tid}");
+        //println!("fresh {tid}");
         // TODO: Handle `_is_new`
         let new_queue = ArrayQueue::new(self.buf_size);
         let r = Arc::new((tid, new_queue));
@@ -228,3 +228,4 @@ fn send_many_local() {
         });
     }
 }
+
