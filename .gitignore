@@ -1,6 +1,7 @@
 /target
 /data
 *.perfetto-trace
+*.pftrace
 traceconv
 trace-*.json
 .vscode/

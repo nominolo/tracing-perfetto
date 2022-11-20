@@ -13,7 +13,6 @@ fn main() {
     bench_batched(threads, rounds);
 }
 
-
 fn bench_shared(threads: usize, rounds: usize) {
     let buf = GlobalShared::new();
 
@@ -45,7 +44,6 @@ fn bench_shared(threads: usize, rounds: usize) {
         }
     });
 }
-
 
 fn bench_batched(threads: usize, rounds: usize) {
     let buf = LocalQueue::new(1024);

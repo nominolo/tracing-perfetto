@@ -1,41 +1,47 @@
-use std::{
-    cell::RefCell,
-    fs::File,
-    io::{BufWriter, Write},
-    marker::PhantomData,
-    ops::Deref,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
-    thread::JoinHandle,
-    time::Instant,
-};
+// use std::{
+//     cell::RefCell,
+//     fs::File,
+//     io::{BufWriter, Write},
+//     marker::PhantomData,
+//     ops::Deref,
+//     path::{Path, PathBuf},
+//     sync::{
+//         atomic::{AtomicU32, Ordering},
+//         Arc,
+//     },
+//     thread::JoinHandle,
+//     time::Instant,
+// };
 
-use crossbeam_channel::{Receiver, Sender};
-use intern::Interned;
-use packet::{
-    DebugAnnotation, TracePacketDefaults, TrackDescriptor, TrackEventDefaults,
-    SEQ_INCREMENTAL_STATE_CLEARED,
-};
-use tracing::{field::Visit, span, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+// use crossbeam_channel::{Receiver, Sender};
+// use intern::Interned;
+// use packet::{
+//     DebugAnnotation, TracePacketDefaults, TrackDescriptor, TrackEventDefaults,
+//     SEQ_INCREMENTAL_STATE_CLEARED,
+// };
+// use tracing::{field::Visit, span, Subscriber};
+// use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use crate::{
-    emit::ProtoEmitter,
-    packet::{
-        Emit, EventName, InternedData, PacketData, TracePacket, TrackEvent,
-        SEQ_NEEDS_INCREMENTAL_STATE,
-    },
-};
+// use crate::{
+//     emit::ProtoEmitter,
+//     packet::{
+//         Emit, EventName, InternedData, PacketData, TracePacket, TrackEvent,
+//         SEQ_NEEDS_INCREMENTAL_STATE,
+//     },
+// };
 
 pub mod buffer;
 mod emit;
 mod intern;
+mod layer;
+mod message;
 mod packet;
+mod writer;
 // mod thread_local;
 
+pub use layer::{FlushGuard, PerfettoLayer, PerfettoLayerBuilder};
+
+/*
 thread_local! {
         //static OUT: RefCell<Option<Sender<Message>>> = RefCell::new(None);
     static THREAD_ID: RefCell<Option<u32>>  = RefCell::new(None);
@@ -526,6 +532,7 @@ fn basic() {
     println!("blah");
     span.exit();
 }
+*/
 
 #[cfg(test)]
 mod tests {
@@ -547,11 +554,10 @@ mod tests {
     fn fib() {
         use tracing_subscriber::prelude::*;
 
-        let (perfetto_layer, _handle) = PerfettoLayerBuilder::new()
-            .file("test-fib.perfetto-trace")
-            .build();
+        let (perfetto_layer, _handle) =
+            PerfettoLayerBuilder::new().file("test-fib.pftrace").build();
         tracing_subscriber::registry().with(perfetto_layer).init();
 
-        fibonacci(6);
+        fibonacci(16);
     }
 }

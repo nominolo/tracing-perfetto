@@ -228,4 +228,3 @@ fn send_many_local() {
         });
     }
 }
-
