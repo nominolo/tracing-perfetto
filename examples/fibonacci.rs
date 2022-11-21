@@ -13,7 +13,7 @@ fn main() {
     use tracing_subscriber::prelude::*;
 
     let (perfetto_layer, _guard) = tracing_perfetto::PerfettoLayerBuilder::new()
-        .file("fibonacci.perfetto-trace")
+        .file("fibonacci.pftrace")
         .include_args(true)
         .build();
     tracing_subscriber::registry().with(perfetto_layer).init();

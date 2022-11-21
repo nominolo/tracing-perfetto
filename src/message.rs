@@ -8,15 +8,29 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use dashmap::DashMap;
 
+use crate::{annotations::FieldValue, packet::DebugAnnotation};
+
 pub type ThreadId = u64;
 pub type Timestamp = u64;
 
 #[derive(Debug)]
 pub enum Message {
     NewThread(ThreadId, Box<String>),
-    Enter { ts: Timestamp, label: &'static str },
-    Exit { ts: Timestamp, label: &'static str },
-    Event { ts: Timestamp, label: &'static str },
+    Enter {
+        ts: Timestamp,
+        label: &'static str,
+        args: Option<Arc<Vec<FieldValue>>>,
+    },
+    Exit {
+        ts: Timestamp,
+        label: &'static str,
+        args: Option<Arc<Vec<FieldValue>>>,
+    },
+    Event {
+        ts: Timestamp,
+        label: &'static str,
+        args: Option<Arc<Vec<FieldValue>>>,
+    },
 }
 
 pub struct Buffer {

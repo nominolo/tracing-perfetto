@@ -83,8 +83,16 @@ impl Emit for TrackDescriptor {
     }
 }
 
+#[derive(Default)]
 pub struct InternedData {
     pub event_names: Vec<EventName>,
+    pub debug_annotation_names: Vec<DebugAnnotationName>,
+}
+
+impl InternedData {
+    pub fn is_empty(&self) -> bool {
+        self.event_names.is_empty() & self.debug_annotation_names.is_empty()
+    }
 }
 
 pub struct EventName {
@@ -105,6 +113,11 @@ impl Emit for InternedData {
             out.nested_small(2, |out| {
                 event_name.emit(out);
             });
+        }
+        for debug_annotation_name in &self.debug_annotation_names {
+            out.nested_small(3, |out| {
+                debug_annotation_name.emit(out);
+            })
         }
     }
 }

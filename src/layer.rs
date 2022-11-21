@@ -7,23 +7,24 @@ use std::{
 };
 
 use crossbeam_channel::Sender;
-use crossbeam_queue::ArrayQueue;
-use dashmap::DashMap;
 
-use tracing::{field::Visit, span, Subscriber};
+use tracing::{span, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use crate::message::{FinishedBuf, Message, MessagingState};
+use crate::{
+    annotations::{FieldValue, SpanAttributeVisitor, SpanAttributesExt},
+    message::{FinishedBuf, Message, MessagingState},
+    packet::DebugAnnotation,
+};
 
 pub struct PerfettoLayer<S> {
     started_at: Instant,
+    include_args: bool,
 
     messaging: MessagingState,
 
     _marker: PhantomData<S>,
 }
-
-type ThreadId = u64;
 
 pub struct PerfettoLayerBuilder<S> {
     output_file: Option<PathBuf>,
@@ -77,6 +78,7 @@ impl<S> PerfettoLayer<S> {
         (
             PerfettoLayer {
                 started_at,
+                include_args: builder.include_args,
                 messaging: msg_state,
                 //include_args: builder.include_args,
                 _marker: PhantomData,
@@ -117,14 +119,17 @@ where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        // if self.include_args {
-        //     let mut v = DebugAnnotationVisitor { infos: Vec::new() };
-        //     attrs.record(&mut v);
-        //     //println!("{:?}", &v.infos);
-        //     ctx.span(id).unwrap().extensions_mut().insert(DebugInfoExt {
-        //         info: Arc::new(v.infos),
-        //     });
-        // }
+        if self.include_args {
+            let mut v = SpanAttributeVisitor { infos: Vec::new() };
+            attrs.record(&mut v);
+            //println!("{:?}", &v.infos);
+            ctx.span(id)
+                .unwrap()
+                .extensions_mut()
+                .insert(SpanAttributesExt {
+                    info: Arc::new(v.infos),
+                });
+        }
     }
 
     // for handling `Span::record` events
@@ -135,26 +140,25 @@ where
     fn on_enter(&self, id: &span::Id, ctx: Context<'_, S>) {
         let span = ctx.span(id);
         let span_name: Option<&'static str> = span.as_ref().map(|s| s.name());
-        //let fields = span.map(|s| s.fields())
 
-        // let (thread_id, new_thread) = self.get_thread_id();
-        // if let Some(name) = new_thread {
-        //     self.init_thread(thread_id, name);
-        // }
-
-        // let arg_info = if let Some(span_ref) = span {
-        //     if let Some(info) = span_ref.extensions().get::<DebugInfoExt>() {
-        //         Some(info.info.clone())
-        //     } else {
-        //         None
-        //     }
-        // } else {
-        //     None
-        // };
+        let arg_info: Option<Arc<Vec<FieldValue>>> = if self.include_args {
+            if let Some(span_ref) = span {
+                if let Some(info) = span_ref.extensions().get::<SpanAttributesExt>() {
+                    Some(Arc::clone(&info.info))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         self.messaging.send_message(Message::Enter {
             ts: self.get_timestamp(),
             label: span_name.unwrap_or(""),
+            args: arg_info,
         });
 
         // println!("on_enter: id={:?}, span_name={:?}, ", id, span_name);
@@ -174,30 +178,32 @@ where
         self.messaging.send_message(Message::Exit {
             ts: self.get_timestamp(),
             label: span_name.unwrap_or(""),
+            args: None,
         });
     }
 
-    // fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-    //     let name = event.metadata().name();
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        let name = event.metadata().name();
 
-    //     let (thread_id, new_thread) = self.get_thread_id();
-    //     if let Some(name) = new_thread {
-    //         self.init_thread(thread_id, name);
-    //     }
+        let arg_info = if self.include_args {
+            let mut v = SpanAttributeVisitor { infos: Vec::new() };
+            event.record(&mut v);
+            if !v.infos.is_empty() {
+                Some(Arc::new(v.infos))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
-    //     let arg_info = if self.include_args {
-    //         let mut v = DebugAnnotationVisitor { infos: Vec::new() };
-    //         event.record(&mut v);
-    //         if !v.infos.is_empty() {
-    //             Some(Arc::new(v.infos))
-    //         } else {
-    //             None
-    //         }
-    //     } else {
-    //         None
-    //     };
+        self.messaging.send_message(Message::Event {
+            ts: self.get_timestamp(),
+            label: name,
+            args: arg_info,
+        })
 
-    //     let msg = Message::Event(self.get_timestamp(), name, arg_info, thread_id);
-    //     self.send_message(msg);
-    // }
+        // let msg = Message::Event(self.get_timestamp(), name, arg_info, thread_id);
+        // self.send_message(msg);
+    }
 }

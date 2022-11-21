@@ -30,6 +30,7 @@
 //     },
 // };
 
+mod annotations;
 pub mod buffer;
 mod emit;
 mod intern;
@@ -536,17 +537,17 @@ fn basic() {
 
 #[cfg(test)]
 mod tests {
-    use tracing::instrument;
+    use tracing::{event, instrument, Level};
     //use tracing_subscriber::prelude::*;
 
     use crate::PerfettoLayerBuilder;
 
     #[instrument]
-    fn fibonacci(n: usize) -> usize {
-        if n < 2 {
-            n
+    fn fibonacci(number: usize) -> usize {
+        if number < 2 {
+            number
         } else {
-            fibonacci(n - 1) + fibonacci(n - 2)
+            fibonacci(number - 1) + fibonacci(number - 2)
         }
     }
 
@@ -559,5 +560,21 @@ mod tests {
         tracing_subscriber::registry().with(perfetto_layer).init();
 
         fibonacci(16);
+    }
+
+    #[test]
+    fn with_args_fib() {
+        use tracing_subscriber::prelude::*;
+
+        let (perfetto_layer, _handle) = PerfettoLayerBuilder::new()
+            .file("test-fib-with-args.pftrace")
+            .include_args(true)
+            .build();
+        tracing_subscriber::registry().with(perfetto_layer).init();
+
+        //let data = (42, "forty-two");
+        fibonacci(16);
+        event!(Level::INFO, "something happened");
+        fibonacci(4);
     }
 }
